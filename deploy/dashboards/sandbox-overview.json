@@ -1,0 +1,36 @@
+{
+  "title": "sandbox-ctl overview",
+  "schemaVersion": 1,
+  "panels": [
+    {
+      "title": "cold start p99",
+      "type": "graph",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum by (le,flavor) (rate(sandbox_cold_start_seconds_bucket[5m])))"
+        }
+      ]
+    },
+    {
+      "title": "warm start p99",
+      "type": "graph",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, sum by (le,flavor) (rate(sandbox_warm_start_seconds_bucket[5m])))"
+        }
+      ]
+    },
+    {
+      "title": "pool occupancy by flavor",
+      "type": "graph",
+      "targets": [{ "expr": "sandbox_pool_occupancy" }]
+    },
+    {
+      "title": "egress denies / s by tenant",
+      "type": "graph",
+      "targets": [
+        { "expr": "sum by (tenant) (rate(sandbox_egress_denies_total[1m]))" }
+      ]
+    }
+  ]
+}

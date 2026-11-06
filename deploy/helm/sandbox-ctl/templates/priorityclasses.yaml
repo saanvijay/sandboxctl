@@ -1,0 +1,15 @@
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: {{ .Values.session.ondemandPriorityClass }}
+value: 10000
+globalDefault: false
+description: "On-demand sandbox runs; outranks warm pool pre-allocations."
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: {{ .Values.warmPool.priorityClass }}
+value: 100
+preemptionPolicy: PreemptLowerPriority
+description: "Warm-pool sandboxes; preemptible by on-demand runs."

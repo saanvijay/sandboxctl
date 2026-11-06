@@ -1,0 +1,74 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sandbox-ctl"
+version = "0.1.0"
+description = "Kubernetes-native control plane for isolated code-execution sandboxes."
+requires-python = ">=3.11"
+readme = "README.md"
+license = { text = "Proprietary" }
+authors = [{ name = "sandbox-ctl contributors" }]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"sandbox_ctl" = ["py.typed"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+  "E", "F", "W",   # pycodestyle, pyflakes
+  "I",             # isort
+  "B",             # bugbear
+  "UP",            # pyupgrade
+  "SIM",           # simplify
+  "C4",            # comprehensions
+  "RUF",           # ruff-specific
+]
+ignore = [
+  "E501",          # handled by formatter
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["B011"]
+# FastAPI's idiom relies on Depends() in defaults, which collides with B008.
+"src/sandbox_ctl/api/routes_sessions.py" = ["B008"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = true
+packages = ["sandbox_ctl"]
+mypy_path = "src"
+
+[[tool.mypy.overrides]]
+module = [
+  "kubernetes.*",
+  "prometheus_client.*",
+  "opentelemetry.*",
+  "grpc.*",
+  "grpcio.*",
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+addopts = "-ra -q --strict-markers"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+  "e2e: end-to-end tests that need a cluster",
+]

@@ -1,0 +1,20 @@
+# Prod overrides. All secret-bearing values come from an external Secret
+# mounted onto the pod — they are not expressed here as plaintext.
+service:
+  env: prod
+
+image:
+  tag: v0.1.0
+
+runtime:
+  driver: firecracker
+  classMvm: kata-mvm
+
+snapshot: {}  # populated via Secret + externalConfig
+
+creds:
+  signingKeyPath: /var/run/secrets/sandbox-ctl/signing.key
+
+logging:
+  level: INFO
+  format: json

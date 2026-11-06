@@ -1,0 +1,417 @@
+# sandbox-ctl
+
+A Kubernetes-native **control plane** for running untrusted,
+model-generated code inside strongly isolated, short-lived sandboxes.
+
+Submit code → the service picks or creates a sandbox Pod with
+seccomp + read-only root + drop-all caps + default-deny egress +
+short-lived per-session credentials, runs it with a wall-time cap,
+returns stdout/stderr/result, and destroys the Pod. Hardened container
+tier (`runc`) by default; opt-in microVM tier (Kata Containers) for
+hardware-virtualization isolation.
+
+**Read first:** [DESIGN.md](DESIGN.md) is where we're going.
+[STATUS.md](STATUS.md) is where we actually are — read it **before** you
+try to deploy or run code. [AGENTS.md](AGENTS.md) is the contributor
+rulebook.
+
+---
+
+## Why this project exists
+
+Kubernetes + Kata Containers already give you a strong isolation
+*boundary*. They do **not** give you a code-execution *service*. This
+project is the layer that turns "an isolation primitive" into "an API
+other people can call."
+
+If your job is "run my own trusted workload with a tighter kernel
+boundary," you don't need this — plain `kubectl` with
+`runtimeClassName: kata` is enough. If your job is "accept code from
+many callers, run it safely, bill it, trace it, and give it back," you
+need something that owns the lifecycle around the sandbox. That's this.
+
+### Kata alone vs. Kata + this control plane
+
+| Capability | Kata alone | With `sandbox-ctl` |
+|---|---|---|
+| Hardware-virt isolation per Pod | ✅ | ✅ |
+| HTTP API to submit code | ❌ | ✅ |
+| Multi-tenancy (who's calling, which tenant) | ❌ | ✅ |
+| Per-tenant quotas (concurrency + RPS) | ❌ | ✅ |
+| Short-lived per-session credentials | ❌ | ✅ |
+| Warm pool to hide cold-start latency | ❌ | ✅ |
+| Per-session egress allowlists | ❌ | ✅ |
+| Session state machine + lifecycle events | ❌ | ✅ |
+| Snapshot / restore protocol | ❌ | ✅ |
+| Pod hardening baked in (seccomp, ro root, drop-ALL, no SA token) | manual | ✅ |
+
+### When this project is for you
+
+- You are building a service where **other people submit code**: an
+  agent runtime, a hosted REPL, a code-interpreter feature, a sandboxed
+  CI, a notebook backend.
+- You need to **explain to an auditor** who ran what, when, with which
+  credentials, and what the sandbox was allowed to reach.
+- You need **short jobs with predictable latency** (warm pool) and
+  per-tenant backpressure (quotas).
+- You want the design decisions (Firecracker over gVisor, Pod-shaped
+  sandboxes over DaemonSet host-agents, allowlist egress over denylist)
+  written down and argued, instead of re-derived.
+
+### When it isn't
+
+- **One tenant, one workload.** Just use `runtimeClassName: kata` and a
+  seccomp profile.
+- **Prototype / internal only, no untrusted callers.** A plain Pod is
+  fine.
+- **You already pay for Modal / E2B / Daytona / Fly Machines / a hosted
+  sandbox.** That's this layer, already operated for you. Don't rebuild.
+
+### What this project is *not*
+
+See [DESIGN.md §1](DESIGN.md#1-purpose-and-scope). Explicit non-goals:
+
+- Not the LLM or agent that generates the code.
+- Not a developer IDE.
+- Not a multi-region orchestrator.
+- Not long-lived, multi-day sessions (target: seconds to minutes).
+
+Also, by design, **this repo does not contain the microVM runtime or
+the in-sandbox agent binary** — those are separate components addressed
+over a gRPC protocol. [STATUS.md](STATUS.md) lists exactly what is and
+isn't in this repo today.
+
+---
+
+## Quick Start
+
+Target: a running sandbox on your laptop in under two minutes.
+
+**Prerequisites**: Docker, `minikube`, `kubectl`, `helm`, Python 3.11+.
+
+```bash
+# 1. Start minikube with a CNI that enforces NetworkPolicy, and metrics.
+minikube start --cni=calico
+minikube addons enable metrics-server
+
+# 2. Build and load the image into minikube.
+docker build -t sandbox-ctl:dev .
+minikube image load sandbox-ctl:dev
+
+# 3. Install the chart with dev values.
+helm install sandbox-ctl deploy/helm/sandbox-ctl \
+  -f deploy/helm/sandbox-ctl/values-dev.yaml
+
+# 4. Port-forward the API.
+kubectl -n sandbox port-forward svc/sandbox-api 8080:8080 &
+
+# 5. Submit a Python run.
+curl -s http://localhost:8080/sessions/run \
+  -H 'content-type: application/json' \
+  -d '{
+    "language": "python",
+    "code": "print(sum(range(10)))"
+  }'
+# → {"session_id":"...","exit_code":0,"stdout":"45\n","stderr":"","duration_ms":...}
+```
+
+That's it. The sandbox Pod has already been destroyed by the time you read
+the response.
+
+**Not working?** Jump to [Troubleshooting](#troubleshooting).
+
+---
+
+## Detailed Guide
+
+### What this project is
+
+A **control plane**: it exposes an HTTP API, builds Kubernetes Pod specs,
+submits them to the cluster, watches them, collects results, and tears
+them down. The actual isolation is done by Kubernetes + a RuntimeClass
+(Kata for microVMs, `runc` for hardened containers).
+
+What it is *not*: the thing that generates the code (an LLM or agent), a
+long-running compute platform, a multi-region orchestrator, or a developer
+IDE.
+
+### Architecture at a glance
+
+```
+   caller
+     │  HTTP
+     ▼
+┌────────────┐     ┌───────────────┐
+│ sandbox-api│────▶│ Kubernetes API│───▶ sandbox-<id> Pod
+└────────────┘     └───────────────┘        │
+     │                                      │ seccomp, ro root, NetworkPolicy,
+     │                                      │ per-session creds, scoped egress
+     │                                      ▼
+     │                                 ┌──────────────┐
+     │                                 │ egress-proxy │ (allowlist)
+     │                                 └──────────────┘
+     │
+     ├── sandbox-pool (warm Pods per flavor)
+     ├── sandbox-egress-ctl (allowlists)
+     └── sandbox-snapshot (microVM snapshots, prod only)
+```
+
+Full detail: [DESIGN.md §3](DESIGN.md#3-high-level-architecture) and
+[§14 Kubernetes Deployment](DESIGN.md#14-kubernetes-deployment).
+
+### Prerequisites
+
+- Python **3.11+**
+- Docker (or a drop-in like Podman)
+- `minikube` **v1.32+**, `kubectl`, `helm` **v3.12+**
+- `make`
+- For production: a Kubernetes cluster with Calico or Cilium, a RuntimeClass
+  for Kata if you want the microVM tier, an object store for snapshots.
+
+### Local setup from scratch
+
+```bash
+# Clone and set up the Python environment.
+git clone <this-repo> && cd sandbox-ctl
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt -r requirements-dev.txt
+
+# Copy and edit configuration.
+cp .env.example .env
+# Edit .env — every REQUIRED variable needs a value.
+
+# Preflight: this verifies CNI, metrics-server, and that NetworkPolicies
+# are actually enforced on your cluster.
+make dev-preflight
+
+# Bring up the full stack on minikube.
+make dev
+```
+
+`make dev` is a convenience wrapper around the Quick Start steps plus the
+preflight check.
+
+### Configuration
+
+**All runtime configuration comes from environment variables.** No hardcoded
+URLs, timeouts, limits, or credentials.
+
+- The authoritative list lives in [DESIGN.md §7](DESIGN.md#7-configuration).
+- The committed template is [`.env.example`](.env.example).
+- The only module that reads env vars is `src/sandbox_ctl/config.py`.
+
+To change a value in dev, edit `.env` and restart the pod (`kubectl rollout
+restart deploy/sandbox-api -n sandbox`). To change it in prod, update the
+appropriate `values-prod.yaml` or Secret and roll.
+
+Variables are grouped (service, http, kubernetes, snapshot store,
+credentials, telemetry, logging). Any variable marked `# REQUIRED` in
+`.env.example` has no default — the service refuses to start without it.
+
+### Running the service
+
+```bash
+# Local, outside Kubernetes (for fast iteration on API code).
+export KUBE_IN_CLUSTER=false
+export KUBE_KUBECONFIG_PATH=$HOME/.kube/config
+uvicorn sandbox_ctl.api.app:app --reload --port 8080
+
+# In-cluster (what make dev does).
+helm upgrade --install sandbox-ctl deploy/helm/sandbox-ctl \
+  -f deploy/helm/sandbox-ctl/values-dev.yaml
+```
+
+### Submitting a run
+
+```bash
+curl -s http://localhost:8080/sessions/run \
+  -H 'content-type: application/json' \
+  -d '{
+    "language": "python",
+    "code": "import sys; print(sys.version)",
+    "timeout_s": 10
+  }'
+```
+
+Response:
+
+```json
+{
+  "session_id": "s_01HX...",
+  "flavor_id": "python-3.11-ctr",
+  "exit_code": 0,
+  "stdout": "3.11.9 ...\n",
+  "stderr": "",
+  "duration_ms": 182,
+  "trace_id": "..."
+}
+```
+
+Supported languages are controlled by the flavors available in the pool.
+Default dev flavors: `python-3.11-ctr`, `node-20-ctr`, `shell-ctr`.
+
+### Testing
+
+```bash
+# Unit tests — fast, no cluster needed.
+pytest tests/unit
+
+# End-to-end tests — spin up minikube first.
+make dev
+pytest tests/e2e
+
+# Everything, with coverage.
+make test
+```
+
+Per [AGENTS.md](AGENTS.md) rule 4, every PR runs the full suite before it
+merges. The e2e suite includes:
+
+- Lifecycle: create → exec → destroy.
+- Warm pool: cold vs. warm start timings.
+- Isolation: breakout attempts, resource exhaustion, egress to non-allowlisted
+  hosts.
+- Credentials: scoped at mint time, revoked on teardown.
+
+### Development workflow
+
+1. Read [DESIGN.md](DESIGN.md); read the module you're changing.
+2. Make the smallest change that solves the task.
+3. Add or update unit tests. Add or update an e2e test if behavior changed.
+4. `make lint test` — must pass.
+5. Update `DESIGN.md` if structure or configuration changed.
+6. Update [`.env.example`](.env.example) if you added or renamed a config
+   variable (and update [DESIGN.md §7](DESIGN.md#7-configuration) in the
+   same commit).
+7. Update this README if setup, config, or usage changed.
+8. Open a PR.
+
+Full contributor rules: [AGENTS.md](AGENTS.md).
+
+### Deployment to production
+
+Short version:
+
+```bash
+helm upgrade --install sandbox-ctl deploy/helm/sandbox-ctl \
+  -n sandbox --create-namespace \
+  -f deploy/helm/sandbox-ctl/values-prod.yaml
+```
+
+Prerequisites your cluster must satisfy:
+
+- CNI that enforces NetworkPolicy (Calico, Cilium).
+- Dedicated node pools, tainted `role=sandbox:NoSchedule`.
+- For the microVM tier: nodes with `/dev/kvm` and the Kata runtime handler
+  installed; a RuntimeClass named per `RUNTIME_CLASS_MVM`.
+- An external object store reachable from the cluster (snapshot store).
+- An OTLP collector (telemetry) and a Prometheus scraper.
+- A KMS or Secret source for the credential signing key.
+
+Full detail: [DESIGN.md §14 Kubernetes Deployment](DESIGN.md#14-kubernetes-deployment).
+
+### Dev/prod parity
+
+The same image and chart deploy to minikube and production. Variance lives
+in `values-*.yaml` and env vars — never in Python branches on environment.
+See [DESIGN.md §14.13](DESIGN.md#1413-devprod-parity).
+
+Caveats to know about dev:
+
+- Container tier only (no microVM boundary). Never run real tenant code in dev.
+- Cluster Autoscaler is prod-only; HPA is exercised in both.
+- Snapshot/restore is disabled in dev.
+
+### Observability
+
+- Logs: structured JSON, every record tagged with `session_id`, `tenant_id`,
+  `trace_id`. Tail with `kubectl logs -n sandbox -l app=sandbox-api -f`.
+- Traces: OpenTelemetry; the trace starts in `sandbox-api` and continues
+  through the in-Pod agent.
+- Metrics: Prometheus; `ServiceMonitor` per Deployment.
+- Dashboards: `deploy/dashboards/sandbox-overview.json`.
+
+Debug a slow session:
+
+```bash
+# Pull the timeline for a session.
+curl -s http://localhost:8080/debug/timeline/<session_id>
+
+# On-demand profile from inside a live sandbox.
+curl -s http://localhost:8080/debug/profile/<session_id>?seconds=5
+```
+
+### Project layout
+
+```
+.
+├── AGENTS.md                     # rules for contributors (humans + agents)
+├── DESIGN.md                     # architecture and module responsibilities
+├── README.md                     # this file
+├── .env.example                  # every config var, placeholder values
+├── pyproject.toml
+├── requirements.txt
+├── requirements-dev.txt
+├── Makefile
+├── Dockerfile
+├── src/sandbox_ctl/              # Python control plane
+│   ├── config.py                 # single source of env parsing
+│   ├── api/                      # HTTP surface
+│   ├── session/                  # orchestration, state, quotas
+│   ├── pool/                     # warm pool
+│   ├── snapshot/                 # snapshot/restore (prod)
+│   ├── runtime/                  # K8s driver, pod spec, agent client
+│   ├── isolation/                # cgroup, filesystem, seccomp, creds
+│   ├── network/                  # egress proxy, allowlist, DNS
+│   ├── telemetry/                # logging, tracing, metrics
+│   └── debug/                    # timeline, introspect, profiler
+├── tests/
+│   ├── unit/
+│   └── e2e/
+└── deploy/
+    ├── helm/sandbox-ctl/         # one chart, values per environment
+    ├── seccomp/
+    └── dashboards/
+```
+
+One file, one purpose. One class per file where the class is the file's
+purpose. See [AGENTS.md](AGENTS.md).
+
+### Troubleshooting
+
+**`make dev-preflight` fails on CNI check.**
+Default minikube CNI doesn't enforce NetworkPolicy. Recreate the cluster:
+
+```bash
+minikube delete
+minikube start --cni=calico
+```
+
+**Pods stay in `Pending`.**
+`kubectl describe pod -n sandbox <pod>` — usually a node-selector or taint
+mismatch. In dev, `values-dev.yaml` should set `sandboxNodeSelector: ""`
+and empty tolerations.
+
+**Pods crash with image pull errors.**
+In dev, the image must be loaded into minikube: `minikube image load
+sandbox-ctl:dev`. Verify with `minikube image ls | grep sandbox-ctl`.
+
+**HPA shows `unknown` for metrics.**
+Enable metrics-server: `minikube addons enable metrics-server`. Give it
+30–60 seconds to collect its first sample.
+
+**`sandbox-api` logs show `KUBE_IN_CLUSTER=true` but can't reach the API.**
+The ServiceAccount lacks RBAC. Check that the chart's `Role` and
+`RoleBinding` were applied: `kubectl get role,rolebinding -n sandbox`.
+
+**Everything looks right but the sandbox can reach the public internet.**
+Your CNI isn't enforcing NetworkPolicy. Confirm with the preflight test;
+if it passes locally but fails semantics, inspect the installed CNI with
+`kubectl get pods -n kube-system`.
+
+More: [DESIGN.md §9 Observability](DESIGN.md#9-observability) and the
+debug endpoints under `/debug/*`.
+
+### License
+
+TBD.

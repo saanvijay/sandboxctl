@@ -1,0 +1,72 @@
+# Default values for sandbox-ctl.
+# Variables here feed directly into env vars inside the Pod, per DESIGN.md §7.
+service:
+  name: sandbox-ctl
+  env: prod
+
+image:
+  repository: ghcr.io/example/sandbox-ctl
+  tag: latest
+  pullPolicy: IfNotPresent
+
+http:
+  host: 0.0.0.0
+  port: 8080
+  requestTimeoutS: 30
+
+runtime:
+  driver: firecracker
+  apiUrl: ""
+  agentGrpcEndpoint: ""
+  agentTimeoutS: 10
+  classMvm: kata-mvm
+  classCtr: runc-hardened
+
+warmPool:
+  size: 16
+  maxIdleS: 600
+  refillConcurrency: 4
+  priorityClass: warm-preemptible
+
+session:
+  maxWallS: 300
+  maxCpuMs: 60000
+  maxMemoryMb: 512
+  maxPids: 256
+  scratchMb: 256
+  ondemandPriorityClass: sandbox-ondemand
+
+tenant:
+  maxConcurrent: 32
+  quotaRps: 20
+
+egress:
+  defaultPolicy: deny
+  allowlistPath: /etc/sandbox-ctl/egress.yaml
+
+snapshot:
+  storeUrl: ""
+  bucket: sandbox-snapshots
+  keyId: ""
+  secret: ""
+
+creds:
+  signingKeyPath: /etc/sandbox-ctl/signing.key
+  ttlS: 300
+
+telemetry:
+  otlpEndpoint: http://otel-collector:4317
+  sampleRatio: 0.1
+  metricsPort: 9090
+
+logging:
+  level: INFO
+  format: json
+
+kubernetes:
+  inCluster: true
+  namespace: sandbox
+  kubeconfigPath: ""
+  nodeSelector: "role=sandbox"
+  imagePullSecret: ""
+  podSeccompProfile: sandbox/default.json

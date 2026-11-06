@@ -1,0 +1,154 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sandbox-api
+  namespace: {{ .Values.kubernetes.namespace | quote }}
+  labels:
+    app: sandbox-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: sandbox-api
+  template:
+    metadata:
+      labels:
+        app: sandbox-api
+    spec:
+      serviceAccountName: sandbox-api
+      containers:
+        - name: api
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.http.port }}
+            - name: metrics
+              containerPort: {{ .Values.telemetry.metricsPort }}
+          env:
+            - name: SERVICE_NAME
+              value: {{ .Values.service.name | quote }}
+            - name: SERVICE_ENV
+              value: {{ .Values.service.env | quote }}
+            - name: HTTP_HOST
+              value: {{ .Values.http.host | quote }}
+            - name: HTTP_PORT
+              value: {{ .Values.http.port | quote }}
+            - name: HTTP_REQUEST_TIMEOUT_S
+              value: {{ .Values.http.requestTimeoutS | quote }}
+            - name: RUNTIME_DRIVER
+              value: {{ .Values.runtime.driver | quote }}
+            - name: RUNTIME_API_URL
+              value: {{ .Values.runtime.apiUrl | quote }}
+            - name: AGENT_GRPC_ENDPOINT
+              value: {{ .Values.runtime.agentGrpcEndpoint | quote }}
+            - name: AGENT_TIMEOUT_S
+              value: {{ .Values.runtime.agentTimeoutS | quote }}
+            - name: WARM_POOL_SIZE
+              value: {{ .Values.warmPool.size | quote }}
+            - name: WARM_POOL_MAX_IDLE_S
+              value: {{ .Values.warmPool.maxIdleS | quote }}
+            - name: WARM_POOL_REFILL_CONCURRENCY
+              value: {{ .Values.warmPool.refillConcurrency | quote }}
+            - name: WARM_POOL_PRIORITY_CLASS
+              value: {{ .Values.warmPool.priorityClass | quote }}
+            - name: SESSION_MAX_WALL_S
+              value: {{ .Values.session.maxWallS | quote }}
+            - name: SESSION_MAX_CPU_MS
+              value: {{ .Values.session.maxCpuMs | quote }}
+            - name: SESSION_MAX_MEMORY_MB
+              value: {{ .Values.session.maxMemoryMb | quote }}
+            - name: SESSION_MAX_PIDS
+              value: {{ .Values.session.maxPids | quote }}
+            - name: SESSION_SCRATCH_MB
+              value: {{ .Values.session.scratchMb | quote }}
+            - name: ONDEMAND_PRIORITY_CLASS
+              value: {{ .Values.session.ondemandPriorityClass | quote }}
+            - name: TENANT_MAX_CONCURRENT
+              value: {{ .Values.tenant.maxConcurrent | quote }}
+            - name: TENANT_QUOTA_RPS
+              value: {{ .Values.tenant.quotaRps | quote }}
+            - name: EGRESS_DEFAULT_POLICY
+              value: {{ .Values.egress.defaultPolicy | quote }}
+            - name: EGRESS_ALLOWLIST_PATH
+              value: {{ .Values.egress.allowlistPath | quote }}
+            - name: SNAPSHOT_STORE_URL
+              value: {{ .Values.snapshot.storeUrl | quote }}
+            - name: SNAPSHOT_STORE_BUCKET
+              value: {{ .Values.snapshot.bucket | quote }}
+            - name: SNAPSHOT_STORE_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: sandbox-ctl-snapshot
+                  key: key-id
+                  optional: true
+            - name: SNAPSHOT_STORE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: sandbox-ctl-snapshot
+                  key: secret
+                  optional: true
+            - name: CREDS_SIGNING_KEY_PATH
+              value: {{ .Values.creds.signingKeyPath | quote }}
+            - name: CREDS_TTL_S
+              value: {{ .Values.creds.ttlS | quote }}
+            - name: OTLP_ENDPOINT
+              value: {{ .Values.telemetry.otlpEndpoint | quote }}
+            - name: OTLP_SAMPLE_RATIO
+              value: {{ .Values.telemetry.sampleRatio | quote }}
+            - name: METRICS_PORT
+              value: {{ .Values.telemetry.metricsPort | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.logging.level | quote }}
+            - name: LOG_FORMAT
+              value: {{ .Values.logging.format | quote }}
+            - name: KUBE_IN_CLUSTER
+              value: {{ .Values.kubernetes.inCluster | quote }}
+            - name: KUBE_NAMESPACE
+              value: {{ .Values.kubernetes.namespace | quote }}
+            - name: KUBE_KUBECONFIG_PATH
+              value: {{ .Values.kubernetes.kubeconfigPath | quote }}
+            - name: RUNTIME_CLASS_MVM
+              value: {{ .Values.runtime.classMvm | quote }}
+            - name: RUNTIME_CLASS_CTR
+              value: {{ .Values.runtime.classCtr | quote }}
+            - name: SANDBOX_NODE_SELECTOR
+              value: {{ .Values.kubernetes.nodeSelector | quote }}
+            - name: SANDBOX_IMAGE_PULL_SECRET
+              value: {{ .Values.kubernetes.imagePullSecret | quote }}
+            - name: POD_SECCOMP_PROFILE
+              value: {{ .Values.kubernetes.podSeccompProfile | quote }}
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sandbox-api
+  namespace: {{ .Values.kubernetes.namespace | quote }}
+spec:
+  selector:
+    app: sandbox-api
+  ports:
+    - name: http
+      port: {{ .Values.http.port }}
+      targetPort: http
+    - name: metrics
+      port: {{ .Values.telemetry.metricsPort }}
+      targetPort: metrics
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sandbox-api
+  namespace: {{ .Values.kubernetes.namespace | quote }}

@@ -1,0 +1,6 @@
+apiVersion: v2
+name: sandbox-ctl
+description: Kubernetes-native control plane for isolated code-execution sandboxes.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

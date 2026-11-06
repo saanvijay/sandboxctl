@@ -1,0 +1,28 @@
+# Dev overrides for minikube/kind. Prod primitives stay identical — only
+# resource shapes, endpoints, and the microVM tier differ (DESIGN.md §14.13).
+service:
+  env: dev
+
+image:
+  tag: dev
+  pullPolicy: Never  # use `minikube image load sandbox-ctl:dev`
+
+runtime:
+  driver: container
+  classMvm: ""         # Kata needs /dev/kvm; disabled in dev.
+  apiUrl: http://runtime.dev.svc:8080
+  agentGrpcEndpoint: grpc://agent.dev.svc:50051
+
+snapshot:
+  storeUrl: http://minio.dev.svc:9000
+
+creds:
+  signingKeyPath: /etc/sandbox-ctl/signing.key
+
+logging:
+  level: DEBUG
+  format: text
+
+kubernetes:
+  nodeSelector: ""
+  imagePullSecret: ""
