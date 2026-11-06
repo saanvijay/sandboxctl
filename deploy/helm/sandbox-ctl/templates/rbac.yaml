@@ -7,6 +7,10 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch", "create", "delete", "patch"]
+  # KubeExecAgent streams into sandbox Pods via the K8s exec API.
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create", "get"]
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get", "list", "create", "delete"]

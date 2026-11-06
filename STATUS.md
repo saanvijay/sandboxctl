@@ -239,11 +239,12 @@ curl http://localhost:8080/healthz
 
 ## 6. The one-sentence summary
 
-**`sandbox-ctl` today is a production-grade control plane that runs
-end-to-end on a laptop with `RUNTIME_BACKEND=docker` (sandbox =
-container, executor = `docker exec`) and ships the right Kubernetes
-primitives for the production microVM path with
-`RUNTIME_BACKEND=kubernetes` — the in-sandbox agent and
-Kata/Firecracker runtime still live outside this repo and must be
-installed separately before the production tier does useful work
-end-to-end.**
+**`sandbox-ctl` today runs end-to-end in three progressively weaker
+isolation tiers: `RUNTIME_BACKEND=docker` (laptop, sandbox = container,
+executor = `docker exec`); `RUNTIME_BACKEND=kubernetes` on a dev
+cluster like minikube (sandbox = Pod, executor = K8s exec stream via
+`KubeExecAgent`, isolation = Pod-level + NetworkPolicy); and the
+production microVM path with the same `RUNTIME_BACKEND=kubernetes`
+switched to the gRPC agent once that agent binary, its generated stubs,
+and the Kata/Firecracker runtime (still outside this repo) are
+installed on sandbox nodes.**

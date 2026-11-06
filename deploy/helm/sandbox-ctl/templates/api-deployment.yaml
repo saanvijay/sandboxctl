@@ -36,6 +36,8 @@ spec:
               value: {{ .Values.http.port | quote }}
             - name: HTTP_REQUEST_TIMEOUT_S
               value: {{ .Values.http.requestTimeoutS | quote }}
+            - name: RUNTIME_BACKEND
+              value: {{ .Values.runtime.backend | quote }}
             - name: RUNTIME_DRIVER
               value: {{ .Values.runtime.driver | quote }}
             - name: RUNTIME_API_URL
@@ -76,18 +78,19 @@ spec:
               value: {{ .Values.snapshot.storeUrl | quote }}
             - name: SNAPSHOT_STORE_BUCKET
               value: {{ .Values.snapshot.bucket | quote }}
+            # In prod, project real credentials from a Secret the operator
+            # manages (External Secrets, KMS, etc.) via helm --set or an
+            # overlay. The chart's own snapshot-secret.yaml handles dev.
             - name: SNAPSHOT_STORE_KEY_ID
               valueFrom:
                 secretKeyRef:
                   name: sandbox-ctl-snapshot
                   key: key-id
-                  optional: true
             - name: SNAPSHOT_STORE_SECRET
               valueFrom:
                 secretKeyRef:
                   name: sandbox-ctl-snapshot
                   key: secret
-                  optional: true
             - name: CREDS_SIGNING_KEY_PATH
               value: {{ .Values.creds.signingKeyPath | quote }}
             - name: CREDS_TTL_S
@@ -118,6 +121,10 @@ spec:
               value: {{ .Values.kubernetes.imagePullSecret | quote }}
             - name: POD_SECCOMP_PROFILE
               value: {{ .Values.kubernetes.podSeccompProfile | quote }}
+          volumeMounts:
+            - name: creds
+              mountPath: /etc/sandbox-ctl
+              readOnly: true
           readinessProbe:
             httpGet:
               path: /readyz
@@ -130,6 +137,10 @@ spec:
               port: http
             initialDelaySeconds: 10
             periodSeconds: 10
+      volumes:
+        - name: creds
+          secret:
+            secretName: sandbox-ctl-creds
 ---
 apiVersion: v1
 kind: Service

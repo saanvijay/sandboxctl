@@ -15,11 +15,12 @@ from __future__ import annotations
 import logging
 
 from sandbox_ctl.config import Settings
-from sandbox_ctl.runtime.agent_client import AgentClient, AsyncAgentClient
+from sandbox_ctl.runtime.agent_client import AgentClient
 from sandbox_ctl.runtime.docker_agent import DockerExecAgent
 from sandbox_ctl.runtime.docker_driver import DockerDriver
 from sandbox_ctl.runtime.driver import Driver
 from sandbox_ctl.runtime.k8s_driver import K8sDriver
+from sandbox_ctl.runtime.kube_exec_agent import KubeExecAgent
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,10 @@ def build_driver(settings: Settings) -> Driver:
 def build_agent(settings: Settings) -> AgentClient:
     backend = settings.runtime_backend
     if backend == "kubernetes":
-        return AsyncAgentClient(timeout_s=settings.agent_timeout_s)
+        # Dev-cluster path: kubectl-exec semantics via the K8s exec stream.
+        # The gRPC agent (AsyncAgentClient) is still unwired; swap it in
+        # when stubs and the in-sandbox binary land.
+        return KubeExecAgent(settings)
     if backend == "docker":
         return DockerExecAgent()
     raise BackendError(f"unknown RUNTIME_BACKEND: {backend!r}")

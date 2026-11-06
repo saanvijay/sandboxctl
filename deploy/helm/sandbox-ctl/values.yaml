@@ -15,6 +15,10 @@ http:
   requestTimeoutS: 30
 
 runtime:
+  # kubernetes (prod, in-cluster) | docker (local laptop). The K8s
+  # executor path is not yet wired (see STATUS.md); the Pod comes up in
+  # health-only mode when it isn't.
+  backend: kubernetes
   driver: firecracker
   apiUrl: ""
   agentGrpcEndpoint: ""

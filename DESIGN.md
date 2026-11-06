@@ -112,6 +112,7 @@ purpose.
 src/sandbox_ctl/
 ├── __init__.py
 ├── config.py                    # Load + validate env vars. One source of truth.
+├── boot.py                      # Compose AppContext for the uvicorn entrypoint.
 │
 ├── api/
 │   ├── app.py                   # ASGI app factory. Routes only, no logic.
@@ -666,11 +667,16 @@ minikube start --cni=calico
 # Required for HPA on control-plane pods.
 minikube addons enable metrics-server
 
-# Load local images instead of pulling.
+# Build and load the control-plane image. The name must match
+# values-dev.yaml's image.repository:tag (sandbox-ctl:dev); the chart
+# pins pullPolicy=Never in dev, so a mismatch shows up as
+# ErrImageNeverPull on the api Pod.
+docker build -t sandbox-ctl:dev .
 minikube image load sandbox-ctl:dev
 
-# Install.
+# Install (creates the namespace on first run).
 helm install sandbox-ctl deploy/helm/sandbox-ctl \
+  -n sandbox --create-namespace \
   -f deploy/helm/sandbox-ctl/values-dev.yaml
 ```
 

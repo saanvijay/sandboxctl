@@ -62,7 +62,7 @@ async def test_create_waits_for_ready(settings: Settings) -> None:
     }
     handle = await driver.create(spec, flavor_id="f")
     assert handle.sandbox_id == "x"
-    assert "grpc://10.0.0.5" in handle.agent_endpoint
+    assert handle.agent_endpoint == f"kube-exec://{settings.kube_namespace}/sandbox-x"
 
 
 async def test_create_raises_on_api_error(settings: Settings) -> None:

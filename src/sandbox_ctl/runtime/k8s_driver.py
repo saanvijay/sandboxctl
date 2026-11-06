@@ -49,16 +49,15 @@ class K8sDriver(Driver):
         except ApiException as exc:
             raise DriverError(f"create failed: {exc.reason}") from exc
         await self._wait_ready(name, namespace, timeout_s=self._settings.session_max_wall_s)
-        pod = await asyncio.to_thread(self._core.read_namespaced_pod, name, namespace)
-        pod_ip = getattr(pod.status, "pod_ip", None) or ""
         return SandboxHandle(
             sandbox_id=sandbox_id,
             pod_name=name,
             namespace=namespace,
             flavor_id=flavor_id,
-            agent_endpoint=f"grpc://{pod_ip}:50051"
-            if pod_ip
-            else self._settings.agent_grpc_endpoint,
+            # kube-exec:// is paired with KubeExecAgent, which this build
+            # ships as the kubernetes-backend agent. When the gRPC agent is
+            # wired, switch this to grpc://<pod_ip>:50051.
+            agent_endpoint=f"kube-exec://{namespace}/{name}",
         )
 
     async def destroy(self, handle: SandboxHandle, *, grace_s: int = 0) -> None:

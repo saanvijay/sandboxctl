@@ -4,6 +4,9 @@ service:
   env: dev
 
 image:
+  # Must match the tag the README builds and `minikube image load` stores
+  # the image under. Prod overrides to a registry path in values-prod.yaml.
+  repository: sandbox-ctl
   tag: dev
   pullPolicy: Never  # use `minikube image load sandbox-ctl:dev`
 
@@ -15,6 +18,11 @@ runtime:
 
 snapshot:
   storeUrl: http://minio.dev.svc:9000
+  # Dev placeholders — the chart's snapshot-secret.yaml creates the
+  # Secret when both are set. Not credentials; the dev backend never
+  # reaches the snapshot store.
+  keyId: dev-key
+  secret: dev-secret
 
 creds:
   signingKeyPath: /etc/sandbox-ctl/signing.key
@@ -25,4 +33,5 @@ logging:
 
 kubernetes:
   nodeSelector: ""
-  imagePullSecret: ""
+  # Any non-empty string; the chart requires one and dev pulls nothing.
+  imagePullSecret: dev-noop

@@ -94,29 +94,43 @@ Target: a running sandbox on your laptop in under two minutes.
 minikube start --cni=calico
 minikube addons enable metrics-server
 
-# 2. Build and load the image into minikube.
+# 2. Build and load the control-plane image into minikube. The name must
+#    match values-dev.yaml's image.repository:tag (pullPolicy: Never in dev),
+#    so sandbox-ctl:dev is what to use.
 docker build -t sandbox-ctl:dev .
 minikube image load sandbox-ctl:dev
+# Pre-load the sandbox flavor image so the sandbox Pod starts without
+# waiting on a registry pull (imagePullPolicy: IfNotPresent uses the local
+# image when it's already on the node).
+docker pull python:3.11-slim
+minikube image load python:3.11-slim
 
-# 3. Install the chart with dev values.
-helm install sandbox-ctl deploy/helm/sandbox-ctl \
+# 3. Install the chart with dev values (creates the namespace on first run,
+#    idempotent on re-runs).
+helm upgrade --install sandbox-ctl deploy/helm/sandbox-ctl \
+  -n sandbox --create-namespace \
   -f deploy/helm/sandbox-ctl/values-dev.yaml
 
-# 4. Port-forward the API.
+# 4. Wait for the control-plane Pod to be Ready, then port-forward the API.
+kubectl -n sandbox rollout status deploy/sandbox-api
 kubectl -n sandbox port-forward svc/sandbox-api 8080:8080 &
 
-# 5. Submit a Python run.
+# 5. Submit a Python run. `x-tenant-id` is required by the dev auth stub;
+#    any string works and the stub refuses to start in prod.
 curl -s http://localhost:8080/sessions/run \
   -H 'content-type: application/json' \
+  -H 'x-tenant-id: demo' \
   -d '{
     "language": "python",
     "code": "print(sum(range(10)))"
   }'
-# → {"session_id":"...","exit_code":0,"stdout":"45\n","stderr":"","duration_ms":...}
+# → {"session_id":"...","flavor_id":"python-3.11-ctr","exit_code":0,
+#    "stdout":"45\n","stderr":"","duration_ms":...}
 ```
 
-That's it. The sandbox Pod has already been destroyed by the time you read
-the response.
+That's it. The control plane created a sandbox Pod, execed into it via
+the K8s exec stream (`KubeExecAgent`), captured stdout, then destroyed
+the Pod before the response landed.
 
 **Not working?** Jump to [Troubleshooting](#troubleshooting).
 
@@ -200,9 +214,13 @@ URLs, timeouts, limits, or credentials.
 - The committed template is [`.env.example`](.env.example).
 - The only module that reads env vars is `src/sandbox_ctl/config.py`.
 
-To change a value in dev, edit `.env` and restart the pod (`kubectl rollout
-restart deploy/sandbox-api -n sandbox`). To change it in prod, update the
-appropriate `values-prod.yaml` or Secret and roll.
+Dev values flow from `values-dev.yaml` through the chart into the Pod's
+env; change them with `helm upgrade --install sandbox-ctl … -f
+deploy/helm/sandbox-ctl/values-dev.yaml` (or `--set`), then
+`kubectl -n sandbox rollout restart deploy/sandbox-api`. The `.env` file
+only matters when you run uvicorn locally — the in-cluster Pod never
+reads it. In prod, update `values-prod.yaml` or the projected Secret
+and roll.
 
 Variables are grouped (service, http, kubernetes, snapshot store,
 credentials, telemetry, logging). Any variable marked `# REQUIRED` in
@@ -214,10 +232,11 @@ credentials, telemetry, logging). Any variable marked `# REQUIRED` in
 # Local, outside Kubernetes (for fast iteration on API code).
 export KUBE_IN_CLUSTER=false
 export KUBE_KUBECONFIG_PATH=$HOME/.kube/config
-uvicorn sandbox_ctl.api.app:app --reload --port 8080
+uvicorn sandbox_ctl.boot:build_app --factory --reload --port 8080
 
 # In-cluster (what make dev does).
 helm upgrade --install sandbox-ctl deploy/helm/sandbox-ctl \
+  -n sandbox --create-namespace \
   -f deploy/helm/sandbox-ctl/values-dev.yaml
 ```
 
@@ -319,6 +338,9 @@ See [DESIGN.md §14.13](DESIGN.md#1413-devprod-parity).
 Caveats to know about dev:
 
 - Container tier only (no microVM boundary). Never run real tenant code in dev.
+- Executor is `KubeExecAgent` (kubectl-exec semantics into sandbox Pods).
+  Prod swaps in the in-sandbox gRPC agent + Kata RuntimeClass; the swap is
+  a two-file change in `runtime/boot.py` once the agent image lands.
 - Cluster Autoscaler is prod-only; HPA is exercised in both.
 - Snapshot/restore is disabled in dev.
 
@@ -393,8 +415,25 @@ mismatch. In dev, `values-dev.yaml` should set `sandboxNodeSelector: ""`
 and empty tolerations.
 
 **Pods crash with image pull errors.**
-In dev, the image must be loaded into minikube: `minikube image load
-sandbox-ctl:dev`. Verify with `minikube image ls | grep sandbox-ctl`.
+In dev, the image must be loaded into minikube under the exact name the
+chart references. `values-dev.yaml` pins `image.repository=sandbox-ctl`,
+`tag=dev`, `pullPolicy=Never`, so the build and load must use the same
+name:
+
+```bash
+docker build -t sandbox-ctl:dev .
+minikube image load sandbox-ctl:dev
+minikube image ls | grep sandbox-ctl
+```
+
+`ErrImageNeverPull` specifically means the name `repository:tag` in the
+Pod spec doesn't match anything in the node's image store — rebuild and
+reload under the name above, or override on install with
+`--set image.repository=<your name>`.
+
+Inside the minikube VM `docker images` will fail with "Cannot connect to
+the Docker daemon" because the inner runtime is containerd. Use
+`minikube image ls` from the host, or `minikube ssh -- sudo crictl images`.
 
 **HPA shows `unknown` for metrics.**
 Enable metrics-server: `minikube addons enable metrics-server`. Give it
@@ -408,6 +447,75 @@ The ServiceAccount lacks RBAC. Check that the chart's `Role` and
 Your CNI isn't enforcing NetworkPolicy. Confirm with the preflight test;
 if it passes locally but fails semantics, inspect the installed CNI with
 `kubectl get pods -n kube-system`.
+
+**`POST /sessions/run` returns 401 `X-Tenant-Id header required`.**
+The `DevHeaderAuth` stub needs a tenant header on every request; any
+string works:
+
+```bash
+curl -s http://localhost:8080/sessions/run \
+  -H 'content-type: application/json' \
+  -H 'x-tenant-id: demo' \
+  -d '{"language":"python","code":"print(1)"}'
+```
+
+The stub refuses to start in prod; wire a real verifier before shipping.
+
+**`POST /sessions/run` returns 404 but `/healthz` works.**
+You're hitting a Pod running in health-only mode. The chart now wires
+the kubernetes backend (sandbox Pods driven by `KubeExecAgent`), so
+health-only means `build_context` raised a `BootError` and the warning
+line prints the cause:
+
+```
+kubectl -n sandbox logs -l app=sandbox-api | grep "serving health routes only"
+```
+
+Common causes:
+
+- Your local uvicorn was started with the wrong factory. Use
+  `sandbox_ctl.boot:build_app` (full context), not
+  `sandbox_ctl.api.app:create_app` (health-only).
+- A REQUIRED env var isn't set — the warning names it; fix the value
+  and roll the Deployment.
+
+**Sandbox Pod stays Pending with `ErrImagePull` on `python:3.11-slim`.**
+Pre-load the image onto the node. Kubelet (not the Pod) does image
+pulls, so this is about reliability on slow or airgapped setups —
+NetworkPolicy does not gate image pulls.
+
+```bash
+docker pull python:3.11-slim
+minikube image load python:3.11-slim
+```
+
+**`POST /sessions/run` returns `{"detail":"runtime error"}` (HTTP 502)
+and the sandbox-api log shows `Pod "sandbox-s_..." is invalid:
+metadata.name`.** Session ids leaked `_` into Pod names on older builds
+and K8s rejects that (RFC 1123 subdomain). Rebuild the control-plane
+image and roll the Deployment:
+
+```bash
+docker build -t sandbox-ctl:dev . && minikube image load sandbox-ctl:dev
+kubectl -n sandbox rollout restart deploy/sandbox-api
+```
+
+**`Handling connection for 8080` printed on your terminal when you curl.**
+That line is from `kubectl port-forward`, so your curl went to the
+in-cluster Pod — not your laptop. If both a local uvicorn and the
+port-forward are up, the port-forward wins (it bound first). Stop the
+port-forward (`Ctrl-C`) or run uvicorn on another port:
+
+```bash
+uvicorn sandbox_ctl.boot:build_app --factory --port 8181
+curl -s http://localhost:8181/sessions/run -H 'x-tenant-id: demo' ...
+```
+
+Which process owns the port:
+
+```bash
+lsof -nP -iTCP:8080 -sTCP:LISTEN     # uvicorn → local; kubectl → forward
+```
 
 More: [DESIGN.md §9 Observability](DESIGN.md#9-observability) and the
 debug endpoints under `/debug/*`.
